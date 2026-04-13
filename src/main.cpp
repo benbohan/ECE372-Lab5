@@ -1,161 +1,211 @@
 // Author: Group 3, Monday 11-2
 // Members: Ben Bohan, Lucius Casertano, Vasu Kedia, Micah Case
-// Date: 3/23/26
-// Assignment: Lab 4
+// Date: 4/13/26
+// Assignment: Lab 5
 //
-// Description: This file contains the main state machine for Lab 4.
-// The potentiometer controls the dc motor speed/direction using ADC,
-// PWM, and the L293D driver. A debounced external interrupt switch
-// turns the motor off, and the seven segment display counts down from
-// 9 to 0 before the motor turns back on.
-//
-// Process:
-// 1. The motor follows the potentiometer.
-// 2. The button is pressed.
-// 3. The motor stops.
-// 4. The seven segment display counts down from 9 to 0.
-// 5. The motor stays off during the countdown.
-// 6. When the countdown ends, the motor goes back to following the potentiometer.
+// Description: This file contains the main state machine for Lab 5.
+// The MPU6050 accelerometer is read over I2C. The 8x8 LED matrix is
+// controlled over SPI. When the measured tilt exceeds the threshold,
+// the display changes from a smiley face to a frowny face and the piezo
+// buzzer chirps. A debounced external interrupt switch silences the alarm.
 //----------------------------------------------------------------------//
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <Arduino.h>
 
-#include "adc.h"
+#include "config.h"
+#include "i2c.h"
 #include "pwm.h"
-#include "sevenseg.h"
+#include "spi_matrix.h"
 #include "switch.h"
 #include "timer.h"
 
+// Main display / alarm state machine
 typedef enum {
-    MOTOR_RUNNING,            // Main state: motor follows potentiometer
-    BUTTON_DEBOUNCE_PRESS,    // Verify button press
-    COUNTDOWN_ACTIVE,         // Disable interrupt & motor during countdown. Reset everything.
+    DISPLAY_SMILE,          // safe tilt, smiley face, buzzer off
+    DISPLAY_FROWN,          // tilt exceeded, frowny face, buzzer on
+    ALARM_SILENCED          // tilt exceeded, alarm silenced by button
 } MainState;
 
-// Initial State
-volatile MainState mainState = MOTOR_RUNNING;
+// Switch debounce state machine
+typedef enum {
+    SWITCH_WAIT,            // waiting for interrupt flag
+    SWITCH_DEBOUNCE_PRESS,  // verify button press
+    SWITCH_WAIT_RELEASE,    // wait until button is released
+    SWITCH_DEBOUNCE_RELEASE // verify release before returning to WAIT
+} SwitchState;
+
+// Initial states
+volatile MainState mainState = DISPLAY_SMILE;
+volatile SwitchState switchState = SWITCH_WAIT;
 
 // Flags updated by ISR / main logic
-volatile unsigned char switchPressed = 0;
-volatile unsigned char countdownDigit = 9;
+volatile unsigned char switchFlag = 0;
+volatile unsigned char alarmLatched = 0;
 
-void initMotorDirectionPins(void){
-    DDRH |= (1 << DDH4) | (1 << DDH5);   // D7 and D8 as outputs
-    PORTH &= ~((1 << PH4) | (1 << PH5)); // start low
-}
+// Accelerometer data
+int xAccel = 0;
+int yAccel = 0;
+int zAccel = 0;
 
-void motorClockwise(void){
-    PORTH |= (1 << PH4);
-    PORTH &= ~(1 << PH5);
-}
-
-void motorCounterClockwise(void){
-    PORTH |= (1 << PH5);
-    PORTH &= ~(1 << PH4);
-}
-
-void motorStop(void){
-    PORTH &= ~((1 << PH4) | (1 << PH5));
-    motorPWM_Off();
-}
-
+// High / low bytes for accelerometer registers
+unsigned char xHigh = 0;
+unsigned char xLow  = 0;
+unsigned char yHigh = 0;
+unsigned char yLow  = 0;
+unsigned char zHigh = 0;
+unsigned char zLow  = 0;
 
 int main(void) {
-  initTimer0();
-  initTimer1();
-  initADC();
-  initPWM_Pins();
-  initSevenSegment();
-  initSwitchPD0();
-  initMotorDirectionPins();
+    init();
+    Serial.begin(9600);
 
-  sei();
-  sevenSegmentOff();
-  unsigned int adcValue = 0;
-  unsigned int pwmValue = 0;
+    initTimer1();
+    initSwitchINT4();
+    enableSwitchInterrupt();
 
-  //Implement state machine 
-	while (1) {
+    InitI2C();
+    initSPI_Matrix();
+    initPWM();
 
-    switch (mainState) {
-      // Case 1: Motor running
-      case MOTOR_RUNNING:
-        adcValue = readADC(); 
-        if (adcValue < 512) {
-          motorClockwise();
-          pwmValue = (511 - adcValue) * 2;
-          changeDutyCycle(pwmValue);
-        } else if (adcValue > 512) {
-          motorCounterClockwise();
-          pwmValue = (adcValue - 512) * 2;
-          changeDutyCycle(pwmValue);
-        } 
+    sei();
 
-        else {
-          motorStop();
+    // Start MPU6050
+    StartI2C_Trans(MPU6050_SLA);
+    Write(PWR_MGMT_1);
+    Write(0x00);
+    StopI2C_Trans();
+
+    setFace(FACE_SMILE);
+    motorPWM_Off();
+
+    while (1) {
+        // ------------------------------------------------------------
+        // Read accelerometer registers
+        // ------------------------------------------------------------
+        xHigh = Read_from(MPU6050_SLA, ACCEL_XOUT_H);
+        xLow  = Read_from(MPU6050_SLA, ACCEL_XOUT_L);
+        yHigh = Read_from(MPU6050_SLA, ACCEL_YOUT_H);
+        yLow  = Read_from(MPU6050_SLA, ACCEL_YOUT_L);
+        zHigh = Read_from(MPU6050_SLA, ACCEL_ZOUT_H);
+        zLow  = Read_from(MPU6050_SLA, ACCEL_ZOUT_L);
+
+        xAccel = ((int)xHigh << 8) | xLow;
+        yAccel = ((int)yHigh << 8) | yLow;
+        zAccel = ((int)zHigh << 8) | zLow;
+
+        Serial.print("X: ");
+        Serial.print(xAccel);
+        Serial.print("  Y: ");
+        Serial.print(yAccel);
+        Serial.print("  Z: ");
+        Serial.println(zAccel);
+
+        // ------------------------------------------------------------
+        // Main display / alarm state machine
+        // ------------------------------------------------------------
+        switch (mainState) {
+            case DISPLAY_SMILE:
+                // TODO: display smiley face on LED matrix
+                // TODO: make sure buzzer is off
+
+                // If threshold exceeded, latch alarm and go to frown
+                if ((yAccel > Y_THRESHOLD) || (yAccel < -Y_THRESHOLD) ||
+                    (zAccel > Z_THRESHOLD) || (zAccel < -Z_THRESHOLD)) {
+                    alarmLatched = 1;
+                    mainState = DISPLAY_FROWN;
+                }
+                break;
+
+            case DISPLAY_FROWN:
+                // TODO: display frowny face on LED matrix
+                // TODO: chirp buzzer using PWM
+
+                // Stay in alarm state until switch silences it
+                if (alarmLatched == 0) {
+                    mainState = ALARM_SILENCED;
+                }
+                break;
+
+            case ALARM_SILENCED:
+                // TODO: keep buzzer off
+                // TODO: decide whether face stays frown or returns to smile
+                // Usually:
+                // - if still tilted, keep frown but no sound
+                // - if returned to safe position, go back to smile
+
+                if ((yAccel < Y_THRESHOLD) && (yAccel > -Y_THRESHOLD) &&
+                    (zAccel < Z_THRESHOLD) && (zAccel > -Z_THRESHOLD)) {
+                    mainState = DISPLAY_SMILE;
+                }
+
+                // Optional:
+                // if you want a new tilt event to retrigger the alarm,
+                // add that logic here
+                break;
+
+            default:
+                mainState = DISPLAY_SMILE;
+                break;
         }
 
-        // Wait for button press, ISR for debounce
-        if (switchPressed) {     
-          switchPressed = 0; // reset flag  
-          mainState = BUTTON_DEBOUNCE_PRESS;
+        // ------------------------------------------------------------
+        // Switch debounce state machine
+        // ------------------------------------------------------------
+        switch (switchState) {
+            case SWITCH_WAIT:
+                if (switchFlag) {
+                    switchFlag = 0;
+                    switchState = SWITCH_DEBOUNCE_PRESS;
+                }
+                break;
+
+            case SWITCH_DEBOUNCE_PRESS:
+                delayMs(DEBOUNCE_TIME);
+
+                // TODO: verify button is still pressed
+                // Since pull-up is used, pressed usually reads low
+                if ((PIND & (1 << PD0)) == 0) {
+                    alarmLatched = 0;
+                    // TODO: turn buzzer off here if needed
+                    disableSwitchInterrupt();
+                    switchState = SWITCH_WAIT_RELEASE;
+                }
+                else {
+                    switchState = SWITCH_WAIT;
+                }
+                break;
+
+            case SWITCH_WAIT_RELEASE:
+                // Wait for release
+                if (PIND & (1 << PD0)) {
+                    switchState = SWITCH_DEBOUNCE_RELEASE;
+                }
+                break;
+
+            case SWITCH_DEBOUNCE_RELEASE:
+                delayMs(DEBOUNCE_TIME);
+
+                if (PIND & (1 << PD0)) {
+                    EIFR |= (1 << INTF0);     // clear pending INT0 flag
+                    enableSwitchInterrupt();  // re-enable interrupt
+                    switchState = SWITCH_WAIT;
+                }
+                else {
+                    switchState = SWITCH_WAIT_RELEASE;
+                }
+                break;
+
+            default:
+                switchState = SWITCH_WAIT;
+                break;
         }
-      break;
-
-      // Case 2: Button released
-      case BUTTON_DEBOUNCE_PRESS:
-        delayMs(5);
-        
-        // If still pressed after 5ms, start COUNTDOWN_ACTIVE
-        if ((PIND & (1 << PD0)) == 0) {
-          motorStop();            // motor off
-          disableSwitchInterrupt();  // disable interrupt
-          
-          countdownDigit = 9;
-          displayDigit(countdownDigit);
-
-          mainState = COUNTDOWN_ACTIVE;
-        }
-
-        // Debounce detected: go back to MOTOR_RUNNING
-        else {
-          mainState = MOTOR_RUNNING;
-        }
-        break;
-
-      // Case 3: Counting down, then Restart motor, enable interrupt turn off 7seg
-      case COUNTDOWN_ACTIVE:
-        delaySec(1);
-
-        // Countdown 9 --> 0
-        if (countdownDigit > 0) {
-            countdownDigit--;
-            displayDigit(countdownDigit);
-        }
-        
-        // After Countdown, reset for MOTOR_RUNNING
-        else {
-          sevenSegmentOff();            // 7seg off
-          EIFR |= (1 << INTF0);         // clear pending INT0 flag
-          enableSwitchInterrupt();      // enable interrupt
-          switchPressed = 0;            // reset switch
-          mainState = MOTOR_RUNNING;    // reset state
-        }
-      break;
-
-      // Case Default
-      default:
-        mainState = MOTOR_RUNNING;
-        break;
     }
-  }
-  return 0;
+    return 0;
 }
 
-// ISR() -- External interrupt for the push button on PORTD0. Keep ISR short: only set a flag / change state.
-ISR(INT0_vect){
-    if (mainState == MOTOR_RUNNING) {
-        switchPressed = 1;
-    }
+// ISR() -- External interrupt for the push button on PORTD0.
+ISR(INT0_vect) {
+    switchFlag = 1;
 }
