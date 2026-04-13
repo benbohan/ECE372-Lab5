@@ -11,12 +11,8 @@
 
 #include <avr/io.h>
 
-// Timer0: switch debounce
-void initTimer0();
-void delayMs(unsigned int delay);
-
-// Timer1: 10 second countdown for 7-segment display
+// Timer1: millisecond timer for switch debounce and general delays
 void initTimer1();
-void delaySec(unsigned int delay);
+void delayMs(unsigned int delay);
 
 #endif
