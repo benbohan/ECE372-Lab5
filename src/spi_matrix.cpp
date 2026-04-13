@@ -1,3 +1,9 @@
+// Author: Group 3, Monday 11-2
+// Members: Ben Bohan, Lucius Casertano, Vasu Kedia, Micah Case
+// Date: 4/13/26
+// Assignment: Lab 5
+//----------------------------------------------------------------------//
+
 #include "spi_matrix.h"
 #include "config.h"
 #include <avr/io.h>

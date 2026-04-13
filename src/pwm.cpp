@@ -1,3 +1,9 @@
+// Author: Group 3, Monday 11-2
+// Members: Ben Bohan, Lucius Casertano, Vasu Kedia, Micah Case
+// Date: 4/13/26
+// Assignment: Lab 5
+//----------------------------------------------------------------------//
+
 #include "pwm.h"
 
 #ifndef F_CPU
