@@ -35,3 +35,7 @@ unsigned char switchPressed() {
     // active low because of pull-up
     return ((PINE & (1 << PINE4)) == 0);
 }
+
+void clearSwitchInterruptFlag() {
+    EIFR |= (1 << INTF4);
+}

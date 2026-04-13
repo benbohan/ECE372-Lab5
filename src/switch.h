@@ -13,5 +13,6 @@ void initSwitchINT4();
 void enableSwitchInterrupt();
 void disableSwitchInterrupt();
 unsigned char switchPressed();
+void clearSwitchInterruptFlag();
 
 #endif

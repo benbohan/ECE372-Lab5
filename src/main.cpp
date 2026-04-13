@@ -71,29 +71,27 @@ int main(void) {
 
     sei();
 
-    // Start MPU6050
-    StartI2C_Trans(MPU6050_SLA);
-    Write(PWR_MGMT_1);
+    // Wake up MPU6050
+    StartI2C_Trans(MPU6050_ADDR);
+    Write(REG_PWR_MGMT_1);
     Write(0x00);
     StopI2C_Trans();
 
     setFace(FACE_SMILE);
-    motorPWM_Off();
+    stopPWM();
 
     while (1) {
-        // ------------------------------------------------------------
         // Read accelerometer registers
-        // ------------------------------------------------------------
-        xHigh = Read_from(MPU6050_SLA, ACCEL_XOUT_H);
-        xLow  = Read_from(MPU6050_SLA, ACCEL_XOUT_L);
-        yHigh = Read_from(MPU6050_SLA, ACCEL_YOUT_H);
-        yLow  = Read_from(MPU6050_SLA, ACCEL_YOUT_L);
-        zHigh = Read_from(MPU6050_SLA, ACCEL_ZOUT_H);
-        zLow  = Read_from(MPU6050_SLA, ACCEL_ZOUT_L);
+        xHigh = Read_from(MPU6050_ADDR, REG_ACCEL_XOUT_H);
+        xLow  = Read_from(MPU6050_ADDR, REG_ACCEL_XOUT_L);
+        yHigh = Read_from(MPU6050_ADDR, REG_ACCEL_YOUT_H);
+        yLow  = Read_from(MPU6050_ADDR, REG_ACCEL_YOUT_L);
+        zHigh = Read_from(MPU6050_ADDR, REG_ACCEL_ZOUT_H);
+        zLow  = Read_from(MPU6050_ADDR, REG_ACCEL_ZOUT_L);
 
-        xAccel = ((int)xHigh << 8) | xLow;
-        yAccel = ((int)yHigh << 8) | yLow;
-        zAccel = ((int)zHigh << 8) | zLow;
+        xAccel = (int16_t)(((uint16_t)xHigh << 8) | xLow);
+        yAccel = (int16_t)(((uint16_t)yHigh << 8) | yLow);
+        zAccel = (int16_t)(((uint16_t)zHigh << 8) | zLow);
 
         Serial.print("X: ");
         Serial.print(xAccel);
@@ -102,25 +100,23 @@ int main(void) {
         Serial.print("  Z: ");
         Serial.println(zAccel);
 
-        // ------------------------------------------------------------
         // Main display / alarm state machine
-        // ------------------------------------------------------------
         switch (mainState) {
             case DISPLAY_SMILE:
-                // TODO: display smiley face on LED matrix
-                // TODO: make sure buzzer is off
+                setFace(FACE_SMILE);
+                stopPWM();
 
                 // If threshold exceeded, latch alarm and go to frown
-                if ((yAccel > Y_THRESHOLD) || (yAccel < -Y_THRESHOLD) ||
-                    (zAccel > Z_THRESHOLD) || (zAccel < -Z_THRESHOLD)) {
+                if ((yAccel > Y_DELTA_THRESHOLD) || (yAccel < -Y_DELTA_THRESHOLD) ||
+                    (zAccel > Z_DELTA_THRESHOLD) || (zAccel < -Z_DELTA_THRESHOLD)) {
                     alarmLatched = 1;
                     mainState = DISPLAY_FROWN;
                 }
                 break;
 
             case DISPLAY_FROWN:
-                // TODO: display frowny face on LED matrix
-                // TODO: chirp buzzer using PWM
+                setFace(FACE_FROWN);
+                chirpPWM();
 
                 // Stay in alarm state until switch silences it
                 if (alarmLatched == 0) {
@@ -129,20 +125,12 @@ int main(void) {
                 break;
 
             case ALARM_SILENCED:
-                // TODO: keep buzzer off
-                // TODO: decide whether face stays frown or returns to smile
-                // Usually:
-                // - if still tilted, keep frown but no sound
-                // - if returned to safe position, go back to smile
+                stopPWM();
 
-                if ((yAccel < Y_THRESHOLD) && (yAccel > -Y_THRESHOLD) &&
-                    (zAccel < Z_THRESHOLD) && (zAccel > -Z_THRESHOLD)) {
+                if ((yAccel < Y_DELTA_THRESHOLD) && (yAccel > -Y_DELTA_THRESHOLD) &&
+                    (zAccel < Z_DELTA_THRESHOLD) && (zAccel > -Z_DELTA_THRESHOLD)) {
                     mainState = DISPLAY_SMILE;
                 }
-
-                // Optional:
-                // if you want a new tilt event to retrigger the alarm,
-                // add that logic here
                 break;
 
             default:
@@ -150,9 +138,7 @@ int main(void) {
                 break;
         }
 
-        // ------------------------------------------------------------
         // Switch debounce state machine
-        // ------------------------------------------------------------
         switch (switchState) {
             case SWITCH_WAIT:
                 if (switchFlag) {
@@ -162,13 +148,11 @@ int main(void) {
                 break;
 
             case SWITCH_DEBOUNCE_PRESS:
-                delayMs(DEBOUNCE_TIME);
+                delayMs(DEBOUNCE_MS);
 
-                // TODO: verify button is still pressed
-                // Since pull-up is used, pressed usually reads low
-                if ((PIND & (1 << PD0)) == 0) {
+                if (switchPressed()) {
                     alarmLatched = 0;
-                    // TODO: turn buzzer off here if needed
+                    stopPWM();
                     disableSwitchInterrupt();
                     switchState = SWITCH_WAIT_RELEASE;
                 }
@@ -179,17 +163,17 @@ int main(void) {
 
             case SWITCH_WAIT_RELEASE:
                 // Wait for release
-                if (PIND & (1 << PD0)) {
+                if (!switchPressed()) {
                     switchState = SWITCH_DEBOUNCE_RELEASE;
                 }
                 break;
 
             case SWITCH_DEBOUNCE_RELEASE:
-                delayMs(DEBOUNCE_TIME);
+                delayMs(DEBOUNCE_MS);
 
-                if (PIND & (1 << PD0)) {
-                    EIFR |= (1 << INTF0);     // clear pending INT0 flag
-                    enableSwitchInterrupt();  // re-enable interrupt
+                if (!switchPressed()) {
+                    clearSwitchInterruptFlag();
+                    enableSwitchInterrupt();
                     switchState = SWITCH_WAIT;
                 }
                 else {
@@ -205,7 +189,7 @@ int main(void) {
     return 0;
 }
 
-// ISR() -- External interrupt for the push button on PORTD0.
-ISR(INT0_vect) {
+// ISR() -- External interrupt for the push button on INT4.
+ISR(INT4_vect) {
     switchFlag = 1;
 }
