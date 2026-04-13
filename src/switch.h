@@ -9,8 +9,9 @@
 #ifndef SWITCH_H
 #define SWITCH_H
 
-void initSwitchPD0();
+void initSwitchINT4();
 void enableSwitchInterrupt();
 void disableSwitchInterrupt();
+unsigned char switchPressed();
 
 #endif

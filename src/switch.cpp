@@ -14,18 +14,24 @@
 *  2. Sets it into input mode
 *  3. Enables external interrupt INT0 configured to logic changes
 */
-void initSwitchPD0(){
-    DDRD  &= ~(1 << DDD0);     // set PD0 as input
-    PORTD |=  (1 << PORTD0);   // enable pull-up resistor
+void initSwitchINT4() {
+    DDRE  &= ~(1 << DDE4);     // PE4 input
+    PORTE |=  (1 << PORTE4);   // enable pull-up
 
-    EICRA |=  (1 << ISC00);    // any logical change on INT0
-    EICRA &= ~(1 << ISC01);
+    // INT4 on any logical change
+    EICRB |=  (1 << ISC40);
+    EICRB &= ~(1 << ISC41);
 }
 
 void enableSwitchInterrupt(){
-    EIMSK |= (1 << INT0);      // enable INT0
+    EIMSK |= (1 << INT4);      // enable INT0
 }
 
 void disableSwitchInterrupt(){
-    EIMSK &= ~(1 << INT0);     // disable INT0
+    EIMSK &= ~(1 << INT4);     // disable INT0
+}
+
+unsigned char switchPressed() {
+    // active low because of pull-up
+    return ((PINE & (1 << PINE4)) == 0);
 }
