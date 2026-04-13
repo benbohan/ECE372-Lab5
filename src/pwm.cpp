@@ -1,29 +1,105 @@
-#include <avr/io.h>
 #include "pwm.h"
 
-void initPWM_Pins(void) {
-    DDRE |= (1 << PE3); // Set PE3 as output for PWM
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
 
-    // Set Fast PWM mode with ICR3 as TOP
+// OC3A on Mega 2560 = PE3 = digital pin 5
+#define BUZZER_DDR   DDRE
+#define BUZZER_PORT  PORTE
+#define BUZZER_BIT   PE3
+
+// Frequency sweep range for chirp
+#define CHIRP_MIN_FREQ  1200
+#define CHIRP_MAX_FREQ  2600
+#define CHIRP_STEP      100
+
+void initPWM(void) {
+    // Set buzzer pin as output
+    BUZZER_DDR |= (1 << BUZZER_BIT);
+    BUZZER_PORT &= ~(1 << BUZZER_BIT);
+
+    // Clear Timer3 control registers
+    TCCR3A = 0;
+    TCCR3B = 0;
+    TCNT3 = 0;
+
+    // Fast PWM mode 14:
+    // WGM33:WGM30 = 1110
+    // TOP = ICR3
     TCCR3A |= (1 << WGM31);
     TCCR3B |= (1 << WGM32) | (1 << WGM33);
 
-    TCCR3A |= (1 << COM3A1); // Clear OC3A on compare match, set at BOTTOM
-    TCCR3B |= (1 << CS31);   // Prescaler of 8
-
-    ICR3 = 1023; // Set TOP value for 10-bit resolution
-    OCR3A = 0;   // Start with motor off
+    // Don't start timer or connect OC3A yet
+    setPWMFrequency(CHIRP_MIN_FREQ);
 }
 
-void changeDutyCycle(uint16_t adcValue) {
-    if (adcValue > 1023) {
-        adcValue = 1023; // Cap at maximum value
+void setPWMFrequency(uint16_t frequency) {
+    uint32_t top;
+
+    // Keep frequency in a reasonable range
+    if (frequency < 100) {
+        frequency = 100;
+    }
+    if (frequency > 10000) {
+        frequency = 10000;
     }
 
-    OCR3A = adcValue; // Set duty cycle based on ADC value
+    // Prescaler = 8
+    // Fast PWM frequency:
+    // f = F_CPU / (N * (1 + TOP))
+    top = (F_CPU / (8UL * (uint32_t)frequency)) - 1;
+
+    if (top > 65535UL) {
+        top = 65535UL;
+    }
+
+    ICR3 = (uint16_t)top;
+
+    // 50% duty cycle
+    OCR3A = ICR3 / 2;
 }
 
-void motorPWM_Off(void) {
-    OCR3A = 0; // Set duty cycle to 0 to turn off motor
+void startPWM(void) {
+    // Non-inverting mode on OC3A
+    TCCR3A |= (1 << COM3A1);
+    TCCR3A &= ~(1 << COM3A0);
+
+    // Start Timer3 with prescaler = 8
+    TCCR3B &= ~((1 << CS32) | (1 << CS31) | (1 << CS30));
+    TCCR3B |= (1 << CS31);
 }
 
+void stopPWM(void) {
+    // Disconnect OC3A from timer
+    TCCR3A &= ~((1 << COM3A1) | (1 << COM3A0));
+
+    // Stop timer clock
+    TCCR3B &= ~((1 << CS32) | (1 << CS31) | (1 << CS30));
+
+    // Drive pin low
+    BUZZER_PORT &= ~(1 << BUZZER_BIT);
+}
+
+void chirpPWM(void) {
+    static uint16_t frequency = CHIRP_MIN_FREQ;
+    static int direction = 1;
+
+    setPWMFrequency(frequency);
+    startPWM();
+
+    // If we're increasing frequency, add step. If we hit max, reverse direction.
+    if (direction > 0) {
+        frequency += CHIRP_STEP;
+        if (frequency >= CHIRP_MAX_FREQ) {
+            frequency = CHIRP_MAX_FREQ;
+            direction = -1;
+        }
+    } else {
+        frequency -= CHIRP_STEP;
+        if (frequency <= CHIRP_MIN_FREQ) {
+            frequency = CHIRP_MIN_FREQ;
+            direction = 1;
+        }
+    }
+}

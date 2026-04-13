@@ -1,10 +1,13 @@
-#ifndef pwm_H
-#define pwm_H
+#ifndef PWM_H
+#define PWM_H
 
+#include <avr/io.h>
 #include <stdint.h>
 
-void initPWM_Pins(void);
-void changeDutyCycle(uint16_t adcValue);
-void motorPWM_Off(void);
+void initPWM(void);
+void startPWM(void);
+void stopPWM(void);
+void setPWMFrequency(uint16_t frequency);
+void chirpPWM(void);
 
 #endif
