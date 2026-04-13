@@ -20,8 +20,6 @@ void initSwitchPD0(){
 
     EICRA |=  (1 << ISC00);    // any logical change on INT0
     EICRA &= ~(1 << ISC01);
-
-    EIMSK |=  (1 << INT0);     // enable external interrupt INT0
 }
 
 void enableSwitchInterrupt(){
